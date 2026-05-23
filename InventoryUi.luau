@@ -1,3 +1,4 @@
+-- connected discord-github
 local UIS = game:GetService("UserInputService")
 local CAS = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
