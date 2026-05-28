@@ -24,12 +24,15 @@ local ItemTag = "InventoryGridItemFrame"
 -- variables
 local CurrentInfoItem
 -- grid table
-local Gridspace = {}
+local Gridspace = {} -- the grid coordination table, first subtables are horizontal grids that store its y-grids 
+-- or basically a table of columns, each with 5 grids that store references to the frame instance that is occupying the grid
+-- this is way more performant than having to use ui collision and all that pixel math since grids are nice units
 -- obj table
 local FrameObjects = {}
 -- obliterator
 local Obliterator = JanitorService.new()
--- info tool cam
+-- info tool cam for the viewport frame
+-- created at runtime since roblox hates existing camera instances
 local InfoToolCam = Instance.new("Camera")
 InfoToolCam.Name = "InfoToolCam"
 InfoToolCam.CFrame = CFrame.new(-10.623, 1.9, 9.565) * CFrame.Angles(0, -math.pi/2, 0)
@@ -68,8 +71,11 @@ local function PositionToGrid(Position : Vector2)
 	-- get mouse pos relative to the window
 	local GridAbsSize = GetGridAbsSize()
 	local RelativePosition = PositionRelativeToWindow(Position)
-	local OriginalX = math.ceil(RelativePosition.X / GridAbsSize.X)
-	local OriginalY = math.ceil(RelativePosition.Y / GridAbsSize.Y)
+	-- add 1 to each rounded grid X and Y since the grid coordination starts at 1,1 and the rounded numbers can return < 1
+	-- therefore giving us a grid that is 1 unit lower on each axis than where it should be
+	local OriginalX = math.round(RelativePosition.X / GridAbsSize.X) + 1
+	local OriginalY = math.round(RelativePosition.Y / GridAbsSize.Y) + 1
+	-- clamp to make sure the frame is dropped within the window even when mouse is outside
 	local GridX = math.clamp(
 		OriginalX,
 		1,
@@ -84,6 +90,7 @@ local function PositionToGrid(Position : Vector2)
 end
 
 local function GridToPosition(Grid : Vector2)
+	-- again since grid coordination starts at 1,1 and that makes more sense than starting at 0
 	Grid -= Vector2.one
 	local GridAbsSize = GetGridAbsSize()
 	return Vector2.new(
@@ -102,12 +109,15 @@ local function GetInventoryItemAtMouse()
 
 	if #UiItems == 0 then return end
 	return UiItems[1]:HasTag(ItemTag) and UiItems[1] or nil
+	-- this is kind of dangerous since there could be ui items at a higher zindex
 end
 
 local function GetOccupantsInArea(GridPosition, SizeX, SizeY)
 	local Occupants = {}
 	for x = GridPosition.X, GridPosition.X + SizeX - 1, 1 do
 		for y = GridPosition.Y, GridPosition.Y + SizeY - 1, 1 do
+			-- check whether the current grid X and then Y in the grid table exists 
+			-- so we know if the frame is at least partly out of the window to not place the frame there sticking a part out of the base window
 			if not Gridspace[x] or not Gridspace[x][y] then return nil end
 			local CurrentOccupant = Gridspace[x][y].Occupant
 			if CurrentOccupant ~= nil then
@@ -160,7 +170,7 @@ function InvUiModule:Init(Main)
 	for x = 1,22, 1 do
 		Gridspace[x] = {}
 		for y = 1,5, 1 do
-			Gridspace[x][y] = {Occupant = nil, Mark = nil}
+			Gridspace[x][y] = {Occupant = nil}
 			-- occupant will be unique instance of the grid frame object
 		end
 	end
@@ -208,11 +218,29 @@ function InvUiModule:ShowActionPanel(FrameObj)
 	local UseOrEquip = Item:IsA("Weapon") and "Equip" or "Use"
 	local Button = ActionPanel:FindFirstChild(UseOrEquip)
 	Button.Visible = true
+
+	local CurrentWeaponEquipped = self.Main.Logic.CurrentItemUID == FrameObj.UID
+	if Item:IsA("Weapon") then
+		if CurrentWeaponEquipped then
+			Button.Text = "Unequip"
+		else
+			Button.Text = "Equip"
+		end
+	end
+	
 	local UseCon = Button.MouseButton1Down:Once(function()
 		if Item:IsA("Weapon") then
-			self.Main.Logic:EquipUID(FrameObj.UID)
+			if CurrentWeaponEquipped then
+				self.Main.Logic:Unequip()
+			else
+				self.Main.Logic:EquipUID(FrameObj.UID)
+			end
+			-- the actual item objects live in the logic module for storage, they share a unique id with their own frame object created from the child module
 		else
-			Item:Use()
+			local UseSuccessful = Item:Use()
+			if UseSuccessful then
+				self:DiscardItem(FrameObj)
+			end
 		end
 	end)
 	
@@ -223,7 +251,6 @@ end
 
 function InvUiModule:ShowInfoPanel(Item, Show)
 	local Viewport = InfoPanel:WaitForChild("ViewportFrame")
-	
 	local OldToolModel = Viewport:FindFirstChildOfClass("Model")
 	if OldToolModel then
 		OldToolModel:Destroy()
@@ -327,6 +354,7 @@ function InvUiModule:StartMoveFrame(FrameObj, NewItem)
 				FrameObj.Instance.ZIndex -= 1
 				self.MovingFrame = false
 				-- communicate with inventory to add this item
+				print(NewItem)
 				self.Main.Logic:AddItem(NewItem, NewItem.UID)
 				CAS:UnbindAction("PlaceFrame")
 				PosUpdateConn:Disconnect()
@@ -344,7 +372,7 @@ function InvUiModule:StartCooldown()
 end
 
 return InvUiModule
--- item frame object module
+-- module for the frame objects
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Players = game:GetService("Players")
@@ -429,6 +457,7 @@ function ItemFrame:AttachToCursor()
 		local MousePos = UIS:GetMouseLocation()
 		local Offset = self.AttachOffset
 		self.Instance.Position = UDim2.fromOffset(MousePos.X - AbsSize.X/2, MousePos.Y - AbsSize.Y/2)
+		-- using offset since atp the frame is parent of the screen gui and the position is updated every frame anyway
 	end)
 	return Connection
 end
